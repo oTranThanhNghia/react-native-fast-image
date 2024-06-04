@@ -1,4 +1,6 @@
 #import "FFFastImageView.h"
+#import <QuickLookThumbnailing/QuickLookThumbnailing.h>
+#import <SDWebImage/SDImageCache.h>
 #import <SDWebImage/UIImage+MultiFormat.h>
 #import <SDWebImage/UIView+WebCache.h>
 
@@ -199,9 +201,82 @@
         self.hasCompleted = NO;
         self.hasErrored = NO;
 
-        [self downloadImage: _source options: options context: context];
+        if(_source != nil && [_source.url.scheme  isEqual: @"file"]) {
+            NSString *sourcePath = [_source.url absoluteString];
+            NSString *cachePath = [[SDImageCache sharedImageCache] cachePathForKey:sourcePath];
+            // check file exist and check modification date of source.url vs check creation date of cachedFile
+            UIImage *cachedImage = [[SDImageCache sharedImageCache] imageFromCacheForKey:sourcePath options:options context:context];
+            if (cachedImage && [self isValidCache:sourcePath cacheFile:cachePath]) {
+                // Use the cached image
+//                NSLog(@"----> get from Cache");
+                NSLog(@"----> get from Cache path = %@", cachePath);
+                [self setImage:cachedImage];
+            } else {
+                // Handle the case where the image is not in the cache
+                NSLog(@"----> generatePreviews");
+                [self generatePreviews:_source];
+            }
+        } else {
+            [self downloadImage: _source options: options context: context];
+        }
     } else if (_defaultSource) {
         [self setImage: _defaultSource];
+    }
+}
+
+- (bool) isValidCache:(NSString*)sourceFile cacheFile: (NSString*) cacheFile {
+//    bool result = false;
+    NSFileManager* fileManager = [NSFileManager defaultManager];
+    NSDictionary* sourceFileAttribs = [fileManager attributesOfItemAtPath:sourceFile error:nil];
+    NSDictionary* cacheFileAttribs = [fileManager attributesOfItemAtPath:cacheFile error:nil];
+    
+    NSDate* sourceFileModificationDate = [sourceFileAttribs objectForKey:NSFileModificationDate];
+    NSDate* cacheFileCreationDate = [cacheFileAttribs objectForKey:NSFileCreationDate];
+    
+    return [sourceFileModificationDate compare:cacheFileCreationDate] == NSOrderedSame;
+}
+
+- (void) generatePreviews:(FFFastImageSource*)source {
+
+    // Generate the best representation
+    if (@available(iOS 13.0, *)) {
+    //    QLPreviewController* previewVC = [[QLPreviewController alloc] init];
+        QLThumbnailGenerator *previewGenerator = [QLThumbnailGenerator sharedGenerator];
+        CGSize thumbnailSize = CGSizeMake(60, 90);
+        CGFloat scale = [[UIScreen mainScreen] scale];
+//        NSLog(@"----> create QLThumbnailGenerationRequest url = %@ ", source.url.absoluteString);
+        QLThumbnailGenerationRequest *request = [[QLThumbnailGenerationRequest alloc] initWithFileAtURL:source.url
+                                                                                             size:thumbnailSize
+                                                                                           scale:scale
+                                                                            representationTypes:QLThumbnailGenerationRequestRepresentationTypeThumbnail];
+        
+        __weak typeof(self) weakSelf = self; // Always use a weak reference to self in blocks
+        [previewGenerator generateBestRepresentationForRequest:request completionHandler:^(QLThumbnailRepresentation * _Nullable thumbnailRep, NSError * _Nullable error) {
+            NSLog(@"----> request generateBestRepresentationForRequest with url = %@", source.url.absoluteString);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if(weakSelf == nil) return;
+                
+                if (thumbnailRep) {
+                    // Thumbnail generation succeeded, use the thumbnail representation
+                    NSString* cachedKey = [source.url absoluteString];
+                    UIImage *thumbnailImage = thumbnailRep.UIImage;
+    //                NSLog(@"----> cache Thumbnail image to disk with key = %@ ", cachedKey);
+                    [[SDImageCache sharedImageCache] storeImage:thumbnailImage forKey:cachedKey toDisk:true completion:nil];
+                    //            [[SDImageCache sharedImageCache] storeImage:thumbnailImage imageData:nil forKey:cachedKey cacheType:SDImageCacheTypeAll completion:^{
+                    //                NSLog(@"cache Thumbnail image done");
+                    //            }];
+                    // Do something with the thumbnail image
+                    [weakSelf setImage:thumbnailImage];
+    //                [previewGenerator ]
+                } else {
+                    // Thumbnail generation failed, handle the error
+                    NSLog(@"Thumbnail generation error: %@", error);
+                }
+            });
+            
+        }];
+    } else {
+        // Fallback on earlier versions
     }
 }
 
